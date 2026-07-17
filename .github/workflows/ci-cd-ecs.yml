@@ -91,14 +91,49 @@ jobs:
       #    GITHUB_ACTOR: ${{ github.actor }}
       #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ======================================================RELLENO
       - name: Show GitHub execution context
         shell: bash
         run: |
           echo "Repository: ${GITHUB_REPOSITORY}"
           echo "Repository owner: ${GITHUB_REPOSITORY_OWNER}"
           echo "Reference: ${GITHUB_REF}"
-          echo "Event: ${GITHUB_EVENT_NAME}"  
+          echo "Event: ${GITHUB_EVENT_NAME}"
 
+      - name: Inspect GitHub OIDC claims
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl --silent --show-error --fail \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+
+          TOKEN=$(echo "${RESPONSE}" | jq -r '.value')
+
+          PAYLOAD=$(echo "${TOKEN}" \
+            | cut -d '.' -f 2 \
+            | tr '_-' '/+' \
+            | awk '{
+                remainder = length($0) % 4
+                if (remainder == 2) $0 = $0 "=="
+                else if (remainder == 3) $0 = $0 "="
+                print $0
+              }' \
+            | base64 --decode)
+
+          echo "${PAYLOAD}" | jq '{
+            iss,
+            aud,
+            sub,
+            repository,
+            repository_owner,
+            ref,
+            environment,
+            event_name
+          }'        
+      # ======================================================RELLENO
+      
       # ======================================================
       # 6. Autenticarse en AWS mediante OIDC
       # ======================================================
