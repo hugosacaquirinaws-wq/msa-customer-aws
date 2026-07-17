@@ -1,0 +1,236 @@
+name: Java CI/CD to Amazon ECS
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: ecs-development
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "17"
+
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  ECS_TASK_DEFINITION: ${{ vars.ECS_TASK_DEFINITION }}
+  ECS_CONTAINER_NAME: ${{ vars.ECS_CONTAINER_NAME }}
+
+jobs:
+  build-publish-deploy:
+    name: Build, publish and deploy to ECS
+    runs-on: ubuntu-latest
+
+    steps:
+      # ======================================================
+      # 1. Descargar código
+      # ======================================================
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # ======================================================
+      # 2. Configurar Java y Maven
+      # ======================================================
+      - name: Configure Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      # ======================================================
+      # 3. Ejecutar pruebas y generar JAR
+      # ======================================================
+      - name: Run tests and build JAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn --batch-mode clean verify
+
+      # ======================================================
+      # 4. Verificar artefacto generado
+      # ======================================================
+      - name: Validate generated JAR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "target/application.jar" ]; then
+            echo "ERROR: target/application.jar was not generated."
+            echo "Generated files:"
+            find target -maxdepth 2 -type f -print || true
+            exit 1
+          fi
+
+          ls -lh target/application.jar
+
+      # ======================================================
+      # 5. Publicar JAR en GitHub Packages
+      # Opcional para ECS, pero puedes mantenerlo.
+      # ======================================================
+      #- name: Publish JAR to GitHub Packages
+      #  shell: bash
+      #  run: |
+      #    set -euo pipefail
+      #    mvn --batch-mode deploy -DskipTests
+      #  env:
+      #    GITHUB_ACTOR: ${{ github.actor }}
+      #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ======================================================
+      # 6. Autenticarse en AWS mediante OIDC
+      # ======================================================
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActionsJavaECS
+
+      # ======================================================
+      # 7. Validar identidad AWS
+      # ======================================================
+      - name: Validate AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws sts get-caller-identity
+
+          echo "Region: ${AWS_REGION}"
+          echo "ECR repository: ${ECR_REPOSITORY}"
+          echo "ECS cluster: ${ECS_CLUSTER}"
+          echo "ECS service: ${ECS_SERVICE}"
+
+      # ======================================================
+      # 8. Autenticarse en ECR
+      # ======================================================
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ======================================================
+      # 9. Construir y publicar imagen
+      # ======================================================
+      - name: Build and push Docker image
+        id: build-image
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          docker build \
+            --file Dockerfile \
+            --tag "${IMAGE_URI}" \
+            .
+
+          docker push "${IMAGE_URI}"
+
+          echo "image=${IMAGE_URI}" >> "${GITHUB_OUTPUT}"
+
+          echo "Published image: ${IMAGE_URI}"
+
+      # ======================================================
+      # 10. Opcional: comprobar que la imagen existe en ECR
+      # ======================================================
+      - name: Validate image in ECR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecr describe-images \
+            --repository-name "${ECR_REPOSITORY}" \
+            --image-ids imageTag="${GITHUB_SHA}" \
+            --region "${AWS_REGION}"
+
+      # ======================================================
+      # 11. Reemplazar la imagen en la Task Definition
+      # ======================================================
+      - name: Render Amazon ECS task definition
+        id: render-task-definition
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_TASK_DEFINITION }}
+          container-name: ${{ env.ECS_CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      # ======================================================
+      # 12. Registrar Task Definition y desplegar ECS Service
+      # ======================================================
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-definition.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # ======================================================
+      # 13. Validar servicio
+      # ======================================================
+      - name: Validate ECS deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecs describe-services \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${ECS_SERVICE}" \
+            --region "${AWS_REGION}" \
+            --query "services[0].{
+              Status:status,
+              Desired:desiredCount,
+              Running:runningCount,
+              Pending:pendingCount,
+              TaskDefinition:taskDefinition
+            }" \
+            --output table
+
+          RUNNING_COUNT=$(aws ecs describe-services \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${ECS_SERVICE}" \
+            --region "${AWS_REGION}" \
+            --query "services[0].runningCount" \
+            --output text)
+
+          if [ "${RUNNING_COUNT}" -lt 1 ]; then
+            echo "ERROR: ECS Service has no running tasks."
+            exit 1
+          fi
+
+      # ======================================================
+      # 14. Mostrar la Task Definition desplegada
+      # ======================================================
+      - name: Show deployed image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TASK_DEFINITION_ARN=$(aws ecs describe-services \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${ECS_SERVICE}" \
+            --query "services[0].taskDefinition" \
+            --output text)
+
+          aws ecs describe-task-definition \
+            --task-definition "${TASK_DEFINITION_ARN}" \
+            --query "taskDefinition.containerDefinitions[?name=='${ECS_CONTAINER_NAME}'].image" \
+            --output text

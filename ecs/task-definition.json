@@ -1,0 +1,41 @@
+{
+  "family": "java-api-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::968077439054:role/ecsTaskExecutionRole-java-api",
+  "taskRoleArn": "arn:aws:iam::968077439054:role/ecsTaskRole-java-api",
+  "containerDefinitions": [
+    {
+      "name": "java-api",
+      "image": "968077439054.dkr.ecr.us-east-1.amazonaws.com/java-api:v1aws",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp",
+          "name": "http-8080",
+          "appProtocol": "http"
+        }
+      ],
+      "environment": [
+        {
+          "name": "SERVER_PORT",
+          "value": "8080"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/java-api-task",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
