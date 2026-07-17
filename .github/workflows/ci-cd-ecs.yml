@@ -103,11 +103,12 @@ jobs:
       # 6. Autenticarse en AWS mediante OIDC
       # ======================================================
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::968077439054:role/java-ecs-deployer
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActionsJavaECS
+          allowed-account-ids: "968077439054"
 
       # ======================================================
       # 7. Validar identidad AWS
