@@ -91,13 +91,21 @@ jobs:
       #    GITHUB_ACTOR: ${{ github.actor }}
       #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Show GitHub execution context
+        shell: bash
+        run: |
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Repository owner: ${GITHUB_REPOSITORY_OWNER}"
+          echo "Reference: ${GITHUB_REF}"
+          echo "Event: ${GITHUB_EVENT_NAME}"  
+
       # ======================================================
       # 6. Autenticarse en AWS mediante OIDC
       # ======================================================
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::968077439054:role/github-java-ecs-deployer
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActionsJavaECS
 
